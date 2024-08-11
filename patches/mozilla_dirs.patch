@@ -1,6 +1,23 @@
 --- a/toolkit/xre/nsXREDirProvider.cpp
 +++ b/toolkit/xre/nsXREDirProvider.cpp
-@@ -300,16 +300,16 @@ static nsresult GetSystemParentDirectory(nsIFile** aFile) {
+@@ -11,6 +11,7 @@
+ 
+ #include "jsapi.h"
+ #include "xpcpublic.h"
++#include "prenv.h"
+ #include "prprf.h"
+ 
+ #include "nsIAppStartup.h"
+@@ -94,6 +95,8 @@
+ #  define APP_REGISTRY_NAME "appreg"
+ #endif
+ 
++#define DEFAULT_PRODUCT_DIR nsLiteralCString(MOZ_USER_DIR)
++
+ #define PREF_OVERRIDE_DIRNAME "preferences"
+ 
+ #if defined(MOZ_CONTENT_TEMP_DIR)
+@@ -300,16 +303,16 @@ static nsresult GetSystemParentDirectory(nsIFile** aFile) {
    rv = GetOSXFolderType(kOnSystemDisk, kApplicationSupportFolderType,
                          getter_AddRefs(localDir));
    if (NS_SUCCEEDED(rv)) {
@@ -21,7 +38,7 @@
  #    endif
        ;
    rv = NS_NewNativeLocalFile(dirname, false, getter_AddRefs(localDir));
-@@ -371,9 +371,9 @@ nsXREDirProvider::GetFile(const char* aProperty, bool* aPersistent,
+@@ -381,10 +384,11 @@ nsXREDirProvider::GetFile(const char* aProperty, bool* aPersistent,
      rv = GetUserDataDirectoryHome(getter_AddRefs(file), false);
      NS_ENSURE_SUCCESS(rv, rv);
  #  if defined(XP_MACOSX)
@@ -29,11 +46,13 @@
 +    rv = file->AppendNative("LibreWolf"_ns);
  #  else   // defined(XP_MACOSX)
 -    rv = file->AppendNative(".mozilla"_ns);
-+    rv = file->AppendNative(".librewolf"_ns);
++    rv = AppendXDGUserNativeManifest(file);
  #  endif  // defined(XP_MACOSX)
++    NS_ENSURE_SUCCESS(rv, rv);
    }
  #endif  // defined(XP_UNIX) || defined(XP_MACOSX)
-@@ -411,9 +411,9 @@ nsXREDirProvider::GetFile(const char* aProperty, bool* aPersistent,
+   else if (!strcmp(aProperty, XRE_UPDATE_ROOT_DIR)) {
+@@ -413,9 +417,9 @@ nsXREDirProvider::GetFile(const char* aProperty, bool* aPersistent,
    else if (!strcmp(aProperty, XRE_SYS_SHARE_EXTENSION_PARENT_DIR)) {
  #  ifdef ENABLE_SYSTEM_EXTENSION_DIRS
  #    if defined(__OpenBSD__) || defined(__FreeBSD__)
@@ -45,7 +64,7 @@
  #    endif
      rv = NS_NewNativeLocalFile(nsDependentCString(sysLExtDir), false,
                                 getter_AddRefs(file));
-@@ -1114,7 +1114,7 @@ nsresult nsXREDirProvider::GetUpdateRootDir(nsIFile** aResult,
+@@ -1132,7 +1136,7 @@ nsresult nsXREDirProvider::GetUpdateRootDir(nsIFile** aResult,
              nsDependentCString(hasVendor ? GetAppVendor() : GetAppName())))) {
        return NS_ERROR_FAILURE;
      }
@@ -54,21 +73,221 @@
      return NS_ERROR_FAILURE;
    }
  
-@@ -1363,7 +1363,7 @@ nsresult nsXREDirProvider::AppendSysUserExtensionPath(nsIFile* aFile) {
+@@ -1287,29 +1291,25 @@ nsresult nsXREDirProvider::GetUserDataDirectoryHome(nsIFile** aFile,
+   NS_ENSURE_SUCCESS(rv, rv);
+ 
+   rv = NS_NewLocalFile(path, true, getter_AddRefs(localDir));
++  NS_ENSURE_SUCCESS(rv, rv);
+ #elif defined(XP_UNIX)
+-  const char* homeDir = getenv("HOME");
++  const char* homeDir = PR_GetEnv("HOME");
+   if (!homeDir || !*homeDir) return NS_ERROR_FAILURE;
+ 
+ #  ifdef ANDROID /* We want (ProfD == ProfLD) on Android. */
+-  aLocal = false;
+-#  endif
+-
++  rv = NS_NewNativeLocalFile(nsDependentCString(homeDir), true,
++                             getter_AddRefs(localDir));
++#  else
+   if (aLocal) {
+-    // If $XDG_CACHE_HOME is defined use it, otherwise use $HOME/.cache.
+-    const char* cacheHome = getenv("XDG_CACHE_HOME");
+-    if (cacheHome && *cacheHome) {
+-      rv = NS_NewNativeLocalFile(nsDependentCString(cacheHome), true,
+-                                 getter_AddRefs(localDir));
+-    } else {
+-      rv = NS_NewNativeLocalFile(nsDependentCString(homeDir), true,
+-                                 getter_AddRefs(localDir));
+-      if (NS_SUCCEEDED(rv)) rv = localDir->AppendNative(".cache"_ns);
+-    }
++    rv = nsXREDirProvider::AppendXDGCachePath(homeDir,
++                                              getter_AddRefs(localDir));
++    NS_ENSURE_SUCCESS(rv, rv);
+   } else {
+-    rv = NS_NewNativeLocalFile(nsDependentCString(homeDir), true,
+-                               getter_AddRefs(localDir));
++    rv = nsXREDirProvider::AppendXDGHomePath(homeDir,
++                                             getter_AddRefs(localDir));
++    NS_ENSURE_SUCCESS(rv, rv);
+   }
++#  endif  // ANDROID
+ #else
+ #  error "Don't know how to get product dir on your platform"
+ #endif
+@@ -1398,8 +1398,7 @@ nsresult nsXREDirProvider::AppendSysUserExtensionPath(nsIFile* aFile) {
  
  #if defined(XP_MACOSX) || defined(XP_WIN)
  
 -  static const char* const sXR = "Mozilla";
-+  static const char* const sXR = "LibreWolf";
-   rv = aFile->AppendNative(nsDependentCString(sXR));
+-  rv = aFile->AppendNative(nsDependentCString(sXR));
++  rv = aFile->AppendNative(DEFAULT_PRODUCT_DIR);
    NS_ENSURE_SUCCESS(rv, rv);
  
-@@ -1373,7 +1373,7 @@ nsresult nsXREDirProvider::AppendSysUserExtensionPath(nsIFile* aFile) {
+   static const char* const sExtensions = "Extensions";
+@@ -1408,8 +1407,7 @@ nsresult nsXREDirProvider::AppendSysUserExtensionPath(nsIFile* aFile) {
  
  #elif defined(XP_UNIX)
  
 -  static const char* const sXR = ".mozilla";
-+  static const char* const sXR = ".librewolf";
-   rv = aFile->AppendNative(nsDependentCString(sXR));
+-  rv = aFile->AppendNative(nsDependentCString(sXR));
++  rv = aFile->AppendNative(DEFAULT_PRODUCT_DIR);
    NS_ENSURE_SUCCESS(rv, rv);
  
+   static const char* const sExtensions = "extensions";
+@@ -1422,6 +1420,91 @@ nsresult nsXREDirProvider::AppendSysUserExtensionPath(nsIFile* aFile) {
+   return NS_OK;
+ }
+ 
++nsresult nsXREDirProvider::AppendXDGCachePath(const char* aHomeDir,
++                                              nsIFile** aFile) {
++  nsresult rv;
++  nsCOMPtr<nsIFile> localDir;
++  nsDependentCString homeDir(aHomeDir);
++
++  // If $XDG_CACHE_HOME is defined use it, otherwise use $HOME/.cache.
++  const char* cacheHome = PR_GetEnv("XDG_CACHE_HOME");
++  if (cacheHome && *cacheHome) {
++    rv = NS_NewNativeLocalFile(nsDependentCString(cacheHome), true,
++                               getter_AddRefs(localDir));
++  } else {
++    rv = NS_NewNativeLocalFile(homeDir, true, getter_AddRefs(localDir));
++    if (NS_SUCCEEDED(rv)) {
++      rv = localDir->AppendNative(".cache"_ns);
++    }
++  }
++
++  if (NS_SUCCEEDED(rv)) {
++    localDir.forget(aFile);
++  }
++
++  return rv;
++}
++
++nsresult nsXREDirProvider::GetXDGConfigHome(const char* aHomeDir,
++                                            nsIFile** aFile) {
++  nsresult rv;
++  nsCOMPtr<nsIFile> localDir;
++
++  const char* xdghomedir = PR_GetEnv("XDG_CONFIG_HOME");
++  if (!xdghomedir || !*xdghomedir) {
++    rv = NS_NewNativeLocalFile(nsDependentCString(aHomeDir), true,
++                               getter_AddRefs(localDir));
++    NS_ENSURE_SUCCESS(rv, rv);
++    rv = localDir->AppendRelativeNativePath(".config"_ns);
++    NS_ENSURE_SUCCESS(rv, rv);
++  } else {
++    rv = NS_NewNativeLocalFile(nsDependentCString(xdghomedir), true,
++                               getter_AddRefs(localDir));
++    NS_ENSURE_SUCCESS(rv, rv);
++  }
++
++  localDir.forget(aFile);
++
++  return rv;
++}
++
++nsresult nsXREDirProvider::AppendXDGHomePath(const char* aHomeDir,
++                                             nsIFile** aFile) {
++  nsresult rv;
++  nsCOMPtr<nsIFile> parentDir;
++  nsDependentCString homeDir(aHomeDir);
++
++  nsCOMPtr<nsIFile> localDir;
++
++  rv = GetXDGConfigHome(aHomeDir, getter_AddRefs(localDir));
++  NS_ENSURE_SUCCESS(rv, rv);
++
++  // We dont hardcode because we want to respect user's MOZ_USER_DIR here
++  rv = localDir->AppendRelativeNativePath(DEFAULT_PRODUCT_DIR);
++  NS_ENSURE_SUCCESS(rv, rv);
++
++  rv = EnsureDirectoryExists(localDir);
++  NS_ENSURE_SUCCESS(rv, rv);
++
++  rv = localDir->GetParent(getter_AddRefs(parentDir));
++  parentDir.forget(aFile);
++  NS_ENSURE_SUCCESS(rv, rv);
++
++  return NS_OK;
++}
++
++#if defined(XP_UNIX)
++nsresult nsXREDirProvider::AppendXDGUserNativeManifest(nsIFile* aFile) {
++  nsresult rv;
++  nsCOMPtr<nsIFile> parentDir;
++
++  rv = aFile->AppendNative(DEFAULT_PRODUCT_DIR);
++  NS_ENSURE_SUCCESS(rv, rv);
++
++  return rv;
++}
++#endif
++
+ nsresult nsXREDirProvider::AppendProfilePath(nsIFile* aFile, bool aLocal) {
+   NS_ASSERTION(aFile, "Null pointer!");
+ 
+@@ -1476,9 +1559,6 @@ nsresult nsXREDirProvider::AppendProfilePath(nsIFile* aFile, bool aLocal) {
+   NS_ENSURE_SUCCESS(rv, rv);
+ #elif defined(XP_UNIX)
+   nsAutoCString folder;
+-  // Make it hidden (by starting with "."), except when local (the
+-  // profile is already under ~/.cache or XDG_CACHE_HOME).
+-  if (!aLocal) folder.Assign('.');
+ 
+   if (!profile.IsEmpty()) {
+     // Skip any leading path characters
+--- a/toolkit/xre/nsXREDirProvider.h
++++ b/toolkit/xre/nsXREDirProvider.h
+@@ -74,6 +74,14 @@ class nsXREDirProvider final : public nsIDirectoryServiceProvider2,
+ 
+   static nsresult GetUserDataDirectory(nsIFile** aFile, bool aLocal);
+ 
++  static nsresult AppendXDGCachePath(const char* aHomeDir,
++                                             nsIFile** aFile);
++  static nsresult AppendXDGHomePath(const char* aHomeDir,
++                                            nsIFile** aFile);
++  static nsresult AppendXDGUserNativeManifest(nsIFile* aFile);
++
++  static nsresult GetXDGConfigHome(const char* aHomeDir, nsIFile** aFile);
++
+   /* make sure you clone it, if you need to do stuff to it */
+   nsIFile* GetGREDir() { return mGREDir; }
+   nsIFile* GetGREBinDir() { return mGREBinDir; }
+--- a/xpcom/io/moz.build
++++ b/xpcom/io/moz.build
+@@ -160,4 +160,5 @@ if CONFIG["OS_ARCH"] == "Linux" and "lib64" in CONFIG["libdir"]:
+ LOCAL_INCLUDES += [
+     "!..",
+     "../build",
++    "/toolkit/xre",
+ ]
+--- a/xpcom/io/nsAppFileLocationProvider.cpp
++++ b/xpcom/io/nsAppFileLocationProvider.cpp
+@@ -13,6 +13,7 @@
+ #include "nsIFile.h"
+ #include "nsString.h"
+ #include "nsSimpleEnumerator.h"
++#include "nsXREDirProvider.h"
+ #include "prenv.h"
+ #include "nsCRT.h"
+ #if defined(MOZ_WIDGET_COCOA)
+@@ -207,11 +208,17 @@ nsresult nsAppFileLocationProvider::GetProductDirectory(nsIFile** aLocalFile,
+     return rv;
+   }
+ #elif defined(XP_UNIX)
+-  rv = NS_NewNativeLocalFile(nsDependentCString(PR_GetEnv("HOME")), true,
++  const char* homeDir = PR_GetEnv("HOME");
++  rv = NS_NewNativeLocalFile(nsDependentCString(homeDir), true,
+                              getter_AddRefs(localDir));
+   if (NS_FAILED(rv)) {
+     return rv;
+   }
++
++  rv = nsXREDirProvider::AppendXDGHomePath(homeDir, getter_AddRefs(localDir));
++  if (NS_FAILED(rv)) {
++    return rv;
++  }
+ #else
+ #  error dont_know_how_to_get_product_dir_on_your_platform
+ #endif
